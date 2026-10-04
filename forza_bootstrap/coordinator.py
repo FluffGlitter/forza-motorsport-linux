@@ -71,6 +71,7 @@ from .state import (
     BootstrapPhase,
     BootstrapState,
     create_transaction,
+    load_latest_transaction_read_only,
     load_transaction,
     load_unfinished_transaction,
     transition,
@@ -805,16 +806,15 @@ def _probe_existing_bootstrap_state(
         info = os.fstat(descriptor)
         if stat.S_IMODE(info.st_mode) != 0o700:
             raise OSError
-        entries = tuple(os.listdir(descriptor))
     except (OSError, BootstrapError):
         raise BootstrapError("bootstrap state root is unsafe") from None
     finally:
         if descriptor is not None:
             os.close(descriptor)
-    significant = [
-        entry for entry in entries if entry not in {".bootstrap.lock", ".journal.lock"}
-    ]
-    if significant:
+    # Lock files and a rolled-back transaction leave a fresh Prepare valid,
+    # matching the "./setup bootstrap" next action reported for ROLLED_BACK.
+    latest = load_latest_transaction_read_only(host.state_root)
+    if latest is not None and latest.phase is not BootstrapPhase.ROLLED_BACK:
         raise BootstrapError("unfinished bootstrap transaction requires resume support")
 
 
