@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import io
 import os
 import subprocess
@@ -1042,6 +1043,45 @@ def test_archive_rejects_excessive_extension_depth(tmp_path: Path) -> None:
 
     with pytest.raises(BootstrapError, match="archive metadata extension depth"):
         inspect_tar(archive, policy(total=2 * 1024 * 1024))
+
+
+def _exhaust_directory_offset(directory_fd: int) -> None:
+    """Leave the shared directory offset at end, as a stale Btrfs view would."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.fdopendir.argtypes = (ctypes.c_int,)
+    libc.fdopendir.restype = ctypes.c_void_p
+    libc.readdir.argtypes = (ctypes.c_void_p,)
+    libc.readdir.restype = ctypes.c_void_p
+    libc.closedir.argtypes = (ctypes.c_void_p,)
+    stream = libc.fdopendir(os.dup(directory_fd))
+    assert stream
+    try:
+        while libc.readdir(stream):
+            pass
+    finally:
+        libc.closedir(stream)
+
+
+def test_remove_directory_contents_sees_entries_added_after_open(
+    tmp_path: Path,
+) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    descriptor = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        (stage / "item").write_bytes(b"payload")
+        (stage / "nested").mkdir()
+        (stage / "nested/item").write_bytes(b"payload")
+        _exhaust_directory_offset(descriptor)
+        assert os.listdir(descriptor) == []
+        # CPython rewinds a descriptor after listing it, so go stale again.
+        _exhaust_directory_offset(descriptor)
+
+        artifacts_module._remove_directory_contents(descriptor)
+    finally:
+        os.close(descriptor)
+
+    assert list(stage.iterdir()) == []
 
 
 def test_archive_rejects_raw_directory_alias_before_tarfile_normalizes_it(

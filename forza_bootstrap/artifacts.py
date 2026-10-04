@@ -1768,8 +1768,14 @@ def verify_bundle_root(root: Path, manifest: BootstrapManifest) -> VerifiedBundl
 
 
 def _remove_directory_contents(directory_fd: int) -> None:
-    with os.scandir(directory_fd) as entries:
-        names = [entry.name for entry in entries]
+    # As in _walk_tree, list through a new open description: a staging
+    # descriptor held since before extraction can miss later entries on Btrfs.
+    scan_fd = os.open(".", _DIRECTORY_FLAGS, dir_fd=directory_fd)
+    try:
+        with os.scandir(scan_fd) as entries:
+            names = [entry.name for entry in entries]
+    finally:
+        os.close(scan_fd)
     for name in names:
         info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         if stat.S_ISDIR(info.st_mode):
