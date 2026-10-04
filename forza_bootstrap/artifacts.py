@@ -706,10 +706,17 @@ def _valid_tar_checksum(header: bytes) -> bool:
     return expected in {unsigned, signed}
 
 
-def _validate_raw_tar_name(header: bytes, typeflag: bytes) -> None:
-    name = header[0:100].split(b"\0", 1)[0]
-    prefix = header[345:500].split(b"\0", 1)[0]
-    raw = prefix + b"/" + name if prefix else name
+def _validate_raw_tar_name(
+    header: bytes, typeflag: bytes, long_name: bytes | None = None
+) -> None:
+    if long_name is not None:
+        # GNU tar truncates the header name to 100 bytes after a long-name
+        # record; the record holds the real name, which may cut after a "/".
+        raw = long_name
+    else:
+        name = header[0:100].split(b"\0", 1)[0]
+        prefix = header[345:500].split(b"\0", 1)[0]
+        raw = prefix + b"/" + name if prefix else name
     if typeflag == tarfile.DIRTYPE and raw.endswith(b"/"):
         raw = raw[:-1]
     parts = raw.split(b"/")
@@ -741,6 +748,7 @@ class _TarGuard:
         self._extension_payload_remaining = 0
         self._extension_kind: bytes | None = None
         self._extension_payload = bytearray()
+        self._long_name: bytes | None = None
         self._extension_total = 0
         self._extension_count = 0
         self._extension_depth = 0
@@ -814,7 +822,8 @@ class _TarGuard:
         if typeflag == tarfile.GNUTYPE_SPARSE:
             raise BootstrapError("sparse archive metadata is forbidden")
         if typeflag not in _TAR_EXTENSION_TYPES:
-            _validate_raw_tar_name(header, typeflag)
+            _validate_raw_tar_name(header, typeflag, self._long_name)
+            self._long_name = None
         size = _tar_number(header[124:136])
         padded_size = (
             (size + _TAR_BLOCK_SIZE - 1) // _TAR_BLOCK_SIZE
@@ -845,6 +854,8 @@ class _TarGuard:
             payload = bytes(self._extension_payload)
             if b"GNU.sparse." in payload or b"SCHILY.realsize" in payload:
                 raise BootstrapError("sparse archive metadata is forbidden")
+        elif self._extension_kind == b"L":
+            self._long_name = bytes(self._extension_payload).split(b"\0", 1)[0]
         self._extension_kind = None
         self._extension_payload_remaining = 0
         self._extension_payload.clear()

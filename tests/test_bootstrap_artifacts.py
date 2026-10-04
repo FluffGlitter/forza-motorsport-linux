@@ -1084,6 +1084,40 @@ def test_remove_directory_contents_sees_entries_added_after_open(
     assert list(stage.iterdir()) == []
 
 
+def make_gnu_long_name_tar(tmp_path: Path, name: str) -> Path:
+    directory = tarfile.TarInfo("root")
+    directory.type = tarfile.DIRTYPE
+    directory.mode = 0o755
+    member = tarfile.TarInfo(name)
+    member.mode = 0o644
+    member.size = 7
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w", format=tarfile.GNU_FORMAT) as archive:
+        archive.addfile(directory)
+        archive.addfile(member, io.BytesIO(b"payload"))
+    path = tmp_path / "gnu-long-name.tar"
+    path.write_bytes(output.getvalue())
+    return path
+
+
+def test_archive_validates_gnu_long_name_not_its_truncated_header(
+    tmp_path: Path,
+) -> None:
+    # The 100-byte header copy ends at a "/", as in GE-Proton11-3's wine-mono gac.
+    directory = "root/" + "d" * 94 + "/"
+    assert len(directory) == 100
+    archive = make_gnu_long_name_tar(tmp_path, directory + "item.dll")
+
+    inspect_tar(archive, policy())
+
+
+def test_archive_rejects_unsafe_gnu_long_name(tmp_path: Path) -> None:
+    archive = make_gnu_long_name_tar(tmp_path, "root/" + "d" * 100 + "/../item")
+
+    with pytest.raises(BootstrapError, match="unsafe archive member"):
+        inspect_tar(archive, policy())
+
+
 def test_archive_rejects_raw_directory_alias_before_tarfile_normalizes_it(
     tmp_path: Path,
 ) -> None:
