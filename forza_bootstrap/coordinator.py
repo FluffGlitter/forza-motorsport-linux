@@ -716,7 +716,8 @@ def _probe_forza_processes(probe: HostProbe) -> None:
             raise BootstrapError("Forza Motorsport process is active")
 
 
-def _probe_runtime_children(host: ResolvedHost) -> None:
+def _probe_runtime_children(host: ResolvedHost, allowed: str | None = None) -> None:
+    """Reject unfinished runtime children other than *allowed*, this bootstrap's own."""
     root = host.user_root / ".local/state/forza-motorsport-linux/runtime-transactions"
     try:
         root_fd = os.open(root, _DIRECTORY)
@@ -743,7 +744,7 @@ def _probe_runtime_children(host: ResolvedHost) -> None:
             raise BootstrapError("cannot inspect runtime child transactions")
 
         for name in entries:
-            if name == "artifact-evidence.json":
+            if name == "artifact-evidence.json" or name == allowed:
                 continue
             transaction_fd: int | None = None
             journal_fd: int | None = None
@@ -1988,7 +1989,7 @@ def validate_prefix(context: FinishContext) -> PrefixInspection:
     _validate_app_manifest(context.host.app_manifest)
     _probe_xodus_service(context.probe)
     _probe_forza_processes(context.probe)
-    _probe_runtime_children(context.host)
+    _probe_runtime_children(context.host, context.state.child_runtime_transaction)
     inspection = _validate_prefix_tree(context)
     tool = inspect_fm(context.host.compatibility_tools / _FM_NAME, context.manifest)
     if (
@@ -3187,6 +3188,9 @@ def _finish_under_lease(
         "runtime-installed",
         **({"child_runtime_transaction": child} if child is not None else {}),
     )
+    # Later prefix validation must accept this bootstrap's own child, which
+    # stays unfinished until acceptance; resume binds its state the same way.
+    context = replace(context, state=state)
     _record(operations, "runtime-install")
     _require_finish_lease(context)
     operations.runtime_status(context, inputs.runtime, child)
