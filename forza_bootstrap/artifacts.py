@@ -1847,6 +1847,45 @@ def _destination(path: str | os.PathLike[str]) -> Path:
     return Path("/", *parts)
 
 
+def _reuse_published_extraction(
+    parent_fd: int,
+    destination: Path,
+    scan: _ArchiveScan,
+    bundle_manifest: BootstrapManifest | None,
+) -> VerifiedBundle | Path:
+    """Reuse a tree published by an earlier run only if it still matches the archive."""
+    try:
+        root_fd = os.open(destination.name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+    except OSError:
+        raise BootstrapError("archive destination already exists") from None
+    try:
+        try:
+            binding = _verify_extracted_tree(root_fd, scan)
+            if bundle_manifest is None:
+                result: VerifiedBundle | Path = destination
+            else:
+                verified = verify_bundle_root(destination, bundle_manifest)
+                result = VerifiedBundle(
+                    destination,
+                    verified.manifest_sha256,
+                    verified.artifacts,
+                )
+            rebound = _verify_extracted_tree(root_fd, scan)
+        except (BootstrapError, OSError):
+            raise BootstrapError(
+                f"archive destination already exists and does not match the archive: {destination}"
+            ) from None
+        if (
+            rebound.root_identity[:6] != binding.root_identity[:6]
+            or rebound.member_identities != binding.member_identities
+            or not _name_matches_directory(parent_fd, destination.name, root_fd)
+        ):
+            raise BootstrapError("archive destination changed during verification")
+        return result
+    finally:
+        os.close(root_fd)
+
+
 def _extract_and_publish(
     archive: _BoundArchive,
     destination: Path,
@@ -1867,7 +1906,12 @@ def _extract_and_publish(
         except FileNotFoundError:
             pass
         else:
-            raise BootstrapError("archive destination already exists")
+            # A published tree is only ever renamed into place after full
+            # verification, so an earlier run's tree that still verifies is
+            # the same tree this extraction would publish.
+            return _reuse_published_extraction(
+                parent_fd, destination, first_scan, bundle_manifest
+            )
         for _ in range(100):
             candidate = f".{destination.name}.{secrets.token_hex(12)}.stage"
             try:

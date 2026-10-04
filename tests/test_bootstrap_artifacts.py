@@ -1246,6 +1246,41 @@ def test_extract_bundle_verifies_then_atomically_publishes(tmp_path: Path) -> No
     ]
 
 
+def test_extract_bundle_reuses_a_matching_tree_from_an_earlier_run(
+    tmp_path: Path,
+) -> None:
+    archive, manifest, _manifest_data = bundle_archive(tmp_path)
+    destination = tmp_path / "published"
+    first = extract_bundle(archive, destination, manifest)
+    identity = (destination / "bin/tool").stat().st_ino
+
+    second = extract_bundle(archive, destination, manifest)
+
+    assert second == first
+    assert (destination / "bin/tool").stat().st_ino == identity
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "bundle.tar.zst",
+        "published",
+    ]
+
+
+def test_extract_bundle_preserves_a_mismatched_tree_from_an_earlier_run(
+    tmp_path: Path,
+) -> None:
+    archive, manifest, _manifest_data = bundle_archive(tmp_path)
+    destination = tmp_path / "published"
+    extract_bundle(archive, destination, manifest)
+    tool = destination / "bin/tool"
+    tool.chmod(0o755 | 0o200)
+    tool.write_bytes(b"tampered")
+    tool.chmod(0o755)
+
+    with pytest.raises(BootstrapError, match="does not match the archive"):
+        extract_bundle(archive, destination, manifest)
+
+    assert tool.read_bytes() == b"tampered"
+
+
 @pytest.mark.parametrize(
     "relative_path",
     (
@@ -1776,6 +1811,27 @@ def test_extract_ge_accepts_declared_relative_contained_links(
         assert (destination / "lib/link").stat().st_ino == (
             destination / "bin/target"
         ).stat().st_ino
+
+
+def test_extract_ge_reuses_a_matching_tree_from_an_earlier_run(
+    tmp_path: Path,
+) -> None:
+    root = "GE-Proton11-3"
+    archive = make_tar(
+        tmp_path,
+        [
+            TarEntry(root, "directory", mode=0o755),
+            TarEntry(f"{root}/bin", "directory", mode=0o755),
+            TarEntry(f"{root}/bin/target", "file", b"target", 0o755),
+            TarEntry(f"{root}/bin/link", "symlink", link_target="target"),
+        ],
+        suffix=".tar.gz",
+    )
+    destination = tmp_path / "ge"
+    assert extract_ge(archive, destination, root) == destination
+
+    assert extract_ge(archive, destination, root) == destination
+    assert (destination / "bin/link").read_bytes() == b"target"
 
 
 @pytest.mark.parametrize(
